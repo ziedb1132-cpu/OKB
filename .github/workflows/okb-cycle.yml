@@ -18,6 +18,7 @@ jobs:
         with:
           ref: main
           persist-credentials: true
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -65,12 +66,55 @@ jobs:
             git add -A
             git commit -m "Persist OKB cycle $i [skip ci]" || true
             pushed=0
-            for attempt in 1 2 3; do
-              git pull --rebase origin main
-              if git push origin HEAD:main; then pushed=1; break; fi
-              sleep 3
+            for attempt in $(seq 1 8); do
+              git fetch origin main
+              if ! git rebase origin/main; then
+                echo "PERSIST_REBASE_FAILED cycle=$i attempt=$attempt"
+                git rebase --abort || true
+                break
+              fi
+              if git push origin HEAD:main; then
+                pushed=1
+                break
+              fi
+              case "$attempt" in
+                1) delay=2 ;;
+                2) delay=4 ;;
+                3) delay=8 ;;
+                4) delay=16 ;;
+                5) delay=32 ;;
+                *) delay=60 ;;
+              esac
+              echo "PERSIST_RETRY cycle=$i attempt=$attempt/8 wait=${delay}s"
+              sleep "$delay"
             done
-            if [ "$pushed" -ne 1 ]; then echo "PERSIST_PUSH_FAILED cycle=$i"; exit 1; fi
+            if [ "$pushed" -ne 1 ]; then
+              echo "PERSIST_PUSH_FAILED cycle=$i"
+              exit 1
+            fi
             sleep 60
           done
           gh workflow run okb-cycle.yml --repo "$GH_REPOSITORY" --ref main
+      - name: Upload recovery state if cycle or persistence fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: okb-recovery-state-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            okb_state.json
+            okb_summary.json
+            strategy_history.json
+            okb_model.pt
+            okb_exit_policy.pt
+            okb_state.json.parts/**
+            okb_state.json.parts.json
+            okb_summary.json.parts/**
+            okb_summary.json.parts.json
+            strategy_history.json.parts/**
+            strategy_history.json.parts.json
+            okb_model.pt.parts/**
+            okb_model.pt.parts.json
+            okb_exit_policy.pt.parts/**
+            okb_exit_policy.pt.parts.json
